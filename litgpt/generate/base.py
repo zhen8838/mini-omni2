@@ -129,9 +129,10 @@ def next_token_A1T2_k230(
     **kwargs: Any,
 ) -> torch.Tensor:
     input_pos = input_pos.to(model.device)
-    input_ids = [input_id.to(model.device) for input_id in input_ids]
+    input_ids = torch.stack(input_ids)
+    # torch.onnx.export(model, (audio_features, input_ids, past_ks, past_vs, None, input_pos, task), "output/models/lit_gpt/lit_gpt.onnx", input_names=['audio_features', 'input_ids', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={"audio_features": {1: "audio_len"}, 'input_ids': {2:'seq_len'},'past_keys': {3:'hist_len'},'past_values': {3:'hist_len'}, 'input_pos': {0:'seq_len'}})
     logits_a, logit_t, next_ks, next_vs = model(
-        audio_features, input_ids, past_ks, past_vs, None, input_pos, task=task
+        audio_features, input_ids, past_ks, past_vs, None, input_pos, task
     ) # 这里的whisper len可以通过audio feature来算
 
     next_audio_tokens = []
@@ -693,6 +694,7 @@ def generate_AA(
     device = input_ids[0].device
 
     output = [[] for _ in range(8)]
+    # torch.onnx.export(model.whisper_adapter, (audio_features), "output/models/whisper_adapter/whisper_adapter.onnx",input_names=['audio_features'])
     x_a = model.whisper_adapter(audio_features)
     past_ks = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
     past_vs = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64

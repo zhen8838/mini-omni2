@@ -132,21 +132,21 @@ class GPT(nn.Module):
 
     def forward(
         self,
-        audio_features: torch.Tensor,
-        input_ids: torch.Tensor,
-        past_ks: torch.Tensor,
-        past_vs: torch.Tensor,
+        audio_features: torch.Tensor, # [1, audio_len, 896]
+        input_ids: torch.Tensor, # [8, 1, seq_len, 896]
+        past_ks: torch.Tensor, # [24, 1, 14, hist_len, 64]
+        past_vs: torch.Tensor, # [24, 1, 14, hist_len, 64]
         clip_features: Optional[torch.Tensor] = None, 
-        input_pos: Optional[torch.Tensor] = None,
+        input_pos: Optional[torch.Tensor] = None, # [seq_len]
         task: Optional[str] = None,
     ) -> torch.Tensor:
 
         show = False
-        T = input_ids[0].size(1)
+        seq_len = input_ids.size(2)
         hist_len = past_ks.size(3)
-        if self.max_seq_length < T:
+        if self.max_seq_length < seq_len:
             raise ValueError(
-                f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."
+                f"Cannot forward sequence of length {seq_len}, max seq length is only {self.max_seq_length}."
             )
 
         if input_pos is not None:  # use the kv cache, change to slice.
@@ -154,10 +154,10 @@ class GPT(nn.Module):
             sin = self.sin.index_select(0, input_pos)
             if self.mask_cache is None:
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = self.mask_cache.index_select(2, input_pos)[:,:,:,:hist_len+T]
+            mask = self.mask_cache.index_select(2, input_pos)[:,:,:,:hist_len+seq_len]
         else:
-            cos = self.cos[:T]
-            sin = self.sin[:T]
+            cos = self.cos[:seq_len]
+            sin = self.sin[:seq_len]
             mask = None
 
         # if audio_features is not None:
@@ -201,20 +201,11 @@ class GPT(nn.Module):
 
         # new impl
         assert clip_features is None
-        x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
-
-        x0 = self.transformer.wte(x0)
-        x1 = self.transformer.wte(x1)
-        x2 = self.transformer.wte(x2)
-        x3 = self.transformer.wte(x3)
-        x4 = self.transformer.wte(x4)
-        x5 = self.transformer.wte(x5)
-        x6 = self.transformer.wte(x6)
-        x7 = self.transformer.wte(x7)
-
+        xinput_ids = self.transformer.wte(input_ids)
+        
         # concat whisper feature
         input_emb = self.concat_feat(
-            audio_features, None, [x0, x1, x2, x3, x4, x5, x6, x7], task
+            audio_features, None, [xinput_ids[0], xinput_ids[1], xinput_ids[2], xinput_ids[3], xinput_ids[4], xinput_ids[5], xinput_ids[6], xinput_ids[7]], task
         )
         x_concat = torch.concat(input_emb, 0)
         x = torch.mean(x_concat, 0, keepdim=True)
@@ -252,7 +243,7 @@ class GPT(nn.Module):
             for i in range(7):
                 xa.append(x_ori[..., text_vocab_size + audio_vocab_size * i : text_vocab_size + audio_vocab_size * (i + 1)])
 
-        return xa, xt, next_ks, next_vs
+        return torch.stack(xa), xt, next_ks, next_vs
 
     @classmethod
     def from_name(cls, name: str, **kwargs: Any) -> Self:
