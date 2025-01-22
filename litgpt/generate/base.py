@@ -118,6 +118,28 @@ def next_token_A1T2(
     next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
     return next_audio_tokens, next_t
 
+def next_token_A1T2_k230(
+    model: GPT,
+    audio_features: torch.tensor,
+    input_ids: list,
+    task: list,
+    input_pos: torch.Tensor,
+    past_ks: torch.Tensor,
+    past_vs: torch.Tensor,
+    **kwargs: Any,
+) -> torch.Tensor:
+    input_pos = input_pos.to(model.device)
+    input_ids = [input_id.to(model.device) for input_id in input_ids]
+    logits_a, logit_t, next_ks, next_vs = model(
+        audio_features, input_ids, past_ks, past_vs, None, input_pos, task=task
+    ) # 这里的whisper len可以通过audio feature来算
+
+    next_audio_tokens = []
+    for logit_a in logits_a:
+        next_a = sample(logit_a, **kwargs).to(dtype=input_ids[0].dtype)
+        next_audio_tokens.append(next_a)
+    next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
+    return next_audio_tokens, next_t, next_ks, next_vs
 
 def next_token_A1T1(
     model: GPT,
@@ -672,13 +694,16 @@ def generate_AA(
 
     output = [[] for _ in range(8)]
     x_a = model.whisper_adapter(audio_features)
-    tokens_A, token_T = next_token_A1T2(
+    past_ks = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
+    past_vs = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
+    tokens_A, token_T, past_ks, past_vs  = next_token_A1T2_k230(
         model,
         x_a,
         input_ids,
-        [T - 3],
         ["A1T2"],
         input_pos=torch.arange(0, T, device=device),
+        past_ks=past_ks,
+        past_vs=past_vs,
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
@@ -702,13 +727,14 @@ def generate_AA(
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
 
-        tokens_A, token_T = next_token_A1T2(
+        tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
             model,
             torch.empty([1,0,896], dtype=torch.float32, device=device),
             model_input_ids,
             None,
-            None,
             input_pos=input_pos,
+            past_ks=past_ks,
+            past_vs=past_vs,
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,

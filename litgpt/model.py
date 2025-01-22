@@ -102,7 +102,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def concat_feat(self, audio_feature:torch.Tensor, clip_feature:None, input_ids: List[torch.Tensor], T: List[int], task):
+    def concat_feat(self, audio_feature:torch.Tensor, clip_feature:None, input_ids: List[torch.Tensor], task):
         assert audio_feature.size(0) == 1
         if task is not None:
           assert len(task) == 1
@@ -134,14 +134,16 @@ class GPT(nn.Module):
         self,
         audio_features: torch.Tensor,
         input_ids: torch.Tensor,
+        past_ks: torch.Tensor,
+        past_vs: torch.Tensor,
         clip_features: Optional[torch.Tensor] = None, 
         input_pos: Optional[torch.Tensor] = None,
-        whisper_lens: Optional[list] = None,
         task: Optional[str] = None,
     ) -> torch.Tensor:
 
         show = False
         T = input_ids[0].size(1)
+        hist_len = past_ks.size(3)
         if self.max_seq_length < T:
             raise ValueError(
                 f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."
@@ -152,7 +154,7 @@ class GPT(nn.Module):
             sin = self.sin.index_select(0, input_pos)
             if self.mask_cache is None:
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = self.mask_cache.index_select(2, input_pos)
+            mask = self.mask_cache.index_select(2, input_pos)[:,:,:,:hist_len+T]
         else:
             cos = self.cos[:T]
             sin = self.sin[:T]
@@ -212,7 +214,7 @@ class GPT(nn.Module):
 
         # concat whisper feature
         input_emb = self.concat_feat(
-            audio_features, None, [x0, x1, x2, x3, x4, x5, x6, x7], whisper_lens, task
+            audio_features, None, [x0, x1, x2, x3, x4, x5, x6, x7], task
         )
         x_concat = torch.concat(input_emb, 0)
         x = torch.mean(x_concat, 0, keepdim=True)
@@ -220,9 +222,14 @@ class GPT(nn.Module):
         if self.config.scale_embeddings:
             x = x * (self.config.n_embd**0.5)
 
-        for block in self.transformer.h:
-            x = block(x, cos, sin, mask, input_pos)
-
+        next_ks = []
+        next_vs = []
+        for i, block in enumerate(self.transformer.h):
+            x, ck, cv = block(x, cos, sin, past_ks[i], past_vs[i], mask, input_pos)
+            next_ks.append(torch.unsqueeze(ck, 0))
+            next_vs.append(torch.unsqueeze(cv, 0))
+        next_ks = torch.concat(next_ks, 0)
+        next_vs = torch.concat(next_vs, 0)
 
         text_vocab_size = self.config.text_vocab_size
         audio_vocab_size = self.config.audio_vocab_size
@@ -245,7 +252,7 @@ class GPT(nn.Module):
             for i in range(7):
                 xa.append(x_ori[..., text_vocab_size + audio_vocab_size * i : text_vocab_size + audio_vocab_size * (i + 1)])
 
-        return xa, xt
+        return xa, xt, next_ks, next_vs
 
     @classmethod
     def from_name(cls, name: str, **kwargs: Any) -> Self:
@@ -338,6 +345,8 @@ class Block(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
+        past_k: torch.Tensor,
+        past_v: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         input_pos: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -358,7 +367,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, mask, input_pos)
+        attention_output, ck, cv  = self.attn(x_normed, cos, sin, past_k, past_v, mask, input_pos)
 
         if self.config.parallel_residual:
             x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
@@ -366,7 +375,7 @@ class Block(nn.Module):
         else:
             x = attention_output + x
             x = self.mlp(self.norm_2(x)) + x
-        return x
+        return x, ck, cv
 
 
 class CausalSelfAttention(nn.Module):
@@ -390,6 +399,8 @@ class CausalSelfAttention(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
+        past_k: torch.Tensor,
+        past_v: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         input_pos: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -435,7 +446,7 @@ class CausalSelfAttention(nn.Module):
         if input_pos is not None:
             if not isinstance(self.kv_cache, KVCache):
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
-            k, v = self.kv_cache(input_pos, k, v)
+            k, v = self.kv_cache(past_k, past_v, k, v)
 
         y = self.scaled_dot_product_attention(q, k, v, mask)
 
@@ -444,7 +455,7 @@ class CausalSelfAttention(nn.Module):
         )  # re-assemble all head outputs side by side
 
         # output projection
-        return self.proj(y)
+        return self.proj(y), k, v
 
     def scaled_dot_product_attention(
         self,
@@ -618,27 +629,31 @@ class KVCache(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> None:
         super().__init__()
-        self.register_buffer(
-            "k", torch.zeros(k_shape, device=device, dtype=dtype), persistent=False
-        )
-        self.register_buffer(
-            "v", torch.zeros(v_shape, device=device, dtype=dtype), persistent=False
-        )
+        # self.register_buffer(
+        #     "k", torch.zeros(k_shape, device=device, dtype=dtype), persistent=False
+        # )
+        # self.register_buffer(
+        #     "v", torch.zeros(v_shape, device=device, dtype=dtype), persistent=False
+        # )
 
     def forward(
-        self, input_pos: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+        self, past_k: torch.Tensor, past_v: torch.Tensor, k: torch.Tensor, v: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # move the buffer to the activation dtype for when AMP is used
-        self.k = self.k.to(k.dtype)
-        self.v = self.v.to(v.dtype)
-        # update the cache
-        k = self.k.index_copy_(2, input_pos, k)
-        v = self.v.index_copy_(2, input_pos, v)
-        return k, v
+        # self.k = self.k.to(k.dtype)
+        # self.v = self.v.to(v.dtype)
+        # update the cache, 返回的kv还是整个的kv，但是对应的input pos已经被更新了.
+        # k = self.k.index_copy_(2, input_pos, k)
+        # v = self.v.index_copy_(2, input_pos, v)
+        # return k, v
+        # k,v, shape: [1, 14, seq_len+1, 64 ]
+        ck = torch.concat((past_k, k), 2)
+        cv = torch.concat((past_v, v), 2)
+        return ck, cv
 
-    def reset_parameters(self) -> None:
-        torch.nn.init.zeros_(self.k)
-        torch.nn.init.zeros_(self.v)
+    # def reset_parameters(self) -> None:
+    #     torch.nn.init.zeros_(self.k)
+    #     torch.nn.init.zeros_(self.v)
 
 
 def build_mask_cache(
