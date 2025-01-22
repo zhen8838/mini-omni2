@@ -82,7 +82,7 @@ def get_input_ids_TT(text, text_tokenizer):
 
 
 def get_input_ids_whisper(
-    mel, leng, whispermodel, device, 
+    mel, leng, whispermodel: whisper.Whisper, device, 
     special_token_a=_answer_a, special_token_t=_answer_t,
 ):
 
@@ -214,10 +214,10 @@ def A1_T2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
 
-def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
+def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, step,
           snacmodel, out_dir=None):
     with fabric.init_tensor():
-        model.set_kv_cache(batch_size=1)
+        model.set_kv_cache(batch_size=1, device=audio_feature.device)
     tokenlist = generate_AA(
         model,
         audio_feature,
@@ -373,7 +373,7 @@ def load_model(ckpt_dir, device):
     
 def download_model(ckpt_dir):
     repo_id = "gpt-omni/mini-omni2"
-    snapshot_download(repo_id, local_dir=ckpt_dir, revision="main")
+    snapshot_download(repo_id, local_dir=ckpt_dir, revision="main", etag_timeout=1000)
 
     
 def get_text_stream(list_output, index, text_tokenizer):
@@ -545,7 +545,7 @@ class OmniInference:
 
 
 def test_infer():
-    device = "cuda:0"
+    device = "cpu:0"
     out_dir = f"./output/{get_time_str()}"
     ckpt_dir = f"./checkpoint"
     if not os.path.exists(ckpt_dir):
@@ -554,7 +554,7 @@ def test_infer():
 
     fabric, model, text_tokenizer, snacmodel, whispermodel = load_model(ckpt_dir, device)
 
-    task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
+    task = ['A1A2'] # 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT'
 
     # prepare test data
     # TODO
@@ -586,28 +586,25 @@ def test_infer():
             print("===============================================================")
             step = 0
             for path in test_audio_list:
-                try:
-                    mel, leng = load_audio(path)
-                    audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device)
-                    text = A1_A2(
-                        fabric,
-                        audio_feature,
-                        input_ids,
-                        leng,
-                        model,
-                        text_tokenizer,
-                        step,
-                        snacmodel,
-                        out_dir=out_dir,
-                    )
-                    print(f"input: {test_audio_transcripts[step]}")
-                    print(f"output: {text}")
-                    step += 1
-                    print(
-                        "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-                    )
-                except:
-                    print(f"[error] failed to process {path}")
+                  mel, leng = load_audio(path)
+                  audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device)
+                  text = A1_A2(
+                      fabric,
+                      audio_feature,
+                      input_ids,
+                      leng,
+                      model,
+                      text_tokenizer,
+                      step,
+                      snacmodel,
+                      out_dir=out_dir,
+                  )
+                  print(f"input: {test_audio_transcripts[step]}")
+                  print(f"output: {text}")
+                  step += 1
+                  print(
+                      "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+                  )
             print("===============================================================")
 
         if 'asr' in task:

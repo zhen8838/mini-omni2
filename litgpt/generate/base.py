@@ -109,7 +109,7 @@ def next_token_A1T2(
     input_ids = [input_id.to(model.device) for input_id in input_ids]
     logits_a, logit_t = model(
         audio_features, input_ids, None, input_pos, whisper_lens=whisper_lens, task=task
-    )
+    ) # 这里的whisper len可以通过audio feature来算
 
     next_audio_tokens = []
     for logit_a in logits_a:
@@ -671,9 +671,10 @@ def generate_AA(
     device = input_ids[0].device
 
     output = [[] for _ in range(8)]
+    x_a = model.whisper_adapter(audio_features)
     tokens_A, token_T = next_token_A1T2(
         model,
-        audio_features.to(torch.float32).to(model.device),
+        x_a,
         input_ids,
         [T - 3],
         ["A1T2"],
@@ -690,7 +691,7 @@ def generate_AA(
 
     text_end = False
     for _ in tqdm(range(2, max_returned_tokens - T + 1)):
-
+        # ring shift
         model_input_ids = []
         for i in range(7):
             model_input_ids.append(
@@ -703,7 +704,7 @@ def generate_AA(
 
         tokens_A, token_T = next_token_A1T2(
             model,
-            None,
+            torch.empty([1,0,896], dtype=torch.float32, device=device),
             model_input_ids,
             None,
             None,

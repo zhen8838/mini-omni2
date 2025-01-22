@@ -7,7 +7,7 @@ https://github.com/EleutherAI/gpt-neox/tree/main/megatron/model.
 """
 
 import math
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -102,24 +102,31 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def concat_feat(self, audio_feature, clip_feature, input_ids, T, task):
+    def concat_feat(self, audio_feature:torch.Tensor, clip_feature:None, input_ids: List[torch.Tensor], T: List[int], task):
+        assert audio_feature.size(0) == 1
+        if task is not None:
+          assert len(task) == 1
+          assert task[0] == 'A1T2'
+        audio_len = audio_feature.size(1)
+        for i in range(7):
+          input_ids[i] = torch.concat((input_ids[i][0:1, 0:1, :], audio_feature[0:1, :audio_len, :], input_ids[i][0:1, audio_len+1:, :]), 1)
+        # old implement
+        # for j in range(len(T)):
+        #     if task[j] != 'T1T2' and task[j] != 'T1A2' and task[j]!='ImageQA_T' and not task[j] == 'ImageCAP' and not task[j] == 'ImageQA_A' and not task[j] == 'ImageQA_AT':
+        #         for i in range(7):
+        #             input_ids[i][j,1:T[j]+1,:] = audio_feature[j][:T[j]].clone() 
+        #         assert task[j] != 'ImageQ', "ImageQ should be concat with audio feature"
 
-        for j in range(len(T)):
-            if task[j] != 'T1T2' and task[j] != 'T1A2' and task[j]!='ImageQA_T' and not task[j] == 'ImageCAP' and not task[j] == 'ImageQA_A' and not task[j] == 'ImageQA_AT':
-                for i in range(7):
-                    input_ids[i][j,1:T[j]+1,:] = audio_feature[j][:T[j]].clone() 
-                assert task[j] != 'ImageQ', "ImageQ should be concat with audio feature"
-
-            elif task[j] == 'ImageQA_A' or task[j] == 'ImageQA_AT':
-                print("concat ImageQA_A feature")
-                for i in range(7):
-                    input_ids[i][j,1:51,:] = clip_feature[j].clone() 
+        #     elif task[j] == 'ImageQA_A' or task[j] == 'ImageQA_AT':
+        #         print("concat ImageQA_A feature")
+        #         for i in range(7):
+        #             input_ids[i][j,1:51,:] = clip_feature[j].clone() 
                     
-                    input_ids[i][j,52 : 52 + T[j],:] = audio_feature[j][:T[j]].clone() 
+        #             input_ids[i][j,52 : 52 + T[j],:] = audio_feature[j][:T[j]].clone() 
 
-            elif task[j] == 'ImageQA_T' or task[j] =='ImageCAP':
-                for i in range(7):
-                    input_ids[i][j,1:51,:] = clip_feature[j].clone()
+        #     elif task[j] == 'ImageQA_T' or task[j] =='ImageCAP':
+        #         for i in range(7):
+        #             input_ids[i][j,1:51,:] = clip_feature[j].clone()
 
         return input_ids
 
@@ -127,7 +134,7 @@ class GPT(nn.Module):
         self,
         audio_features: torch.Tensor,
         input_ids: torch.Tensor,
-        clip_features: torch.Tensor, 
+        clip_features: Optional[torch.Tensor] = None, 
         input_pos: Optional[torch.Tensor] = None,
         whisper_lens: Optional[list] = None,
         task: Optional[str] = None,
@@ -140,7 +147,7 @@ class GPT(nn.Module):
                 f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."
             )
 
-        if input_pos is not None:  # use the kv cache
+        if input_pos is not None:  # use the kv cache, change to slice.
             cos = self.cos.index_select(0, input_pos)
             sin = self.sin.index_select(0, input_pos)
             if self.mask_cache is None:
@@ -151,44 +158,64 @@ class GPT(nn.Module):
             sin = self.sin[:T]
             mask = None
 
-        if audio_features is not None:
-            # get whisper feature
-            x_a = self.whisper_adapter(audio_features)
-            if clip_features is not None:
-                x_v = self.vision_adapter(clip_features) 
-            else:
-                x_v = None
-            # get input_ids embedding
-            x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
+        # if audio_features is not None:
+        #     # get whisper feature
+        #     x_a = self.whisper_adapter(audio_features)
+        #     if clip_features is not None:
+        #         x_v = self.vision_adapter(clip_features) 
+        #     else:
+        #         x_v = None
+        #     # get input_ids embedding
+        #     x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
 
-            x0 = self.transformer.wte(x0)
-            x1 = self.transformer.wte(x1)
-            x2 = self.transformer.wte(x2)
-            x3 = self.transformer.wte(x3)
-            x4 = self.transformer.wte(x4)
-            x5 = self.transformer.wte(x5)
-            x6 = self.transformer.wte(x6)
-            x7 = self.transformer.wte(x7)
+        #     x0 = self.transformer.wte(x0)
+        #     x1 = self.transformer.wte(x1)
+        #     x2 = self.transformer.wte(x2)
+        #     x3 = self.transformer.wte(x3)
+        #     x4 = self.transformer.wte(x4)
+        #     x5 = self.transformer.wte(x5)
+        #     x6 = self.transformer.wte(x6)
+        #     x7 = self.transformer.wte(x7)
 
-            # concat whisper feature
-            input_emb = self.concat_feat(
-                x_a, x_v, [x0, x1, x2, x3, x4, x5, x6, x7], whisper_lens, task
-            )
-            x0, x1, x2, x3, x4, x5, x6, x7 = input_emb
+        #     # concat whisper feature
+        #     input_emb = self.concat_feat(
+        #         x_a, x_v, [x0, x1, x2, x3, x4, x5, x6, x7], whisper_lens, task
+        #     )
+        #     x0, x1, x2, x3, x4, x5, x6, x7 = input_emb
 
-        else:
-            x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
+        # else:
+        #     x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
 
-            x0 = self.transformer.wte(x0)
-            x1 = self.transformer.wte(x1)
-            x2 = self.transformer.wte(x2)
-            x3 = self.transformer.wte(x3)
-            x4 = self.transformer.wte(x4)
-            x5 = self.transformer.wte(x5)
-            x6 = self.transformer.wte(x6)
-            x7 = self.transformer.wte(x7)
+        #     x0 = self.transformer.wte(x0)
+        #     x1 = self.transformer.wte(x1)
+        #     x2 = self.transformer.wte(x2)
+        #     x3 = self.transformer.wte(x3)
+        #     x4 = self.transformer.wte(x4)
+        #     x5 = self.transformer.wte(x5)
+        #     x6 = self.transformer.wte(x6)
+        #     x7 = self.transformer.wte(x7)
 
-        x = (x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7) / 8
+        # x = (x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7) / 8
+
+        # new impl
+        assert clip_features is None
+        x0, x1, x2, x3, x4, x5, x6, x7 = input_ids
+
+        x0 = self.transformer.wte(x0)
+        x1 = self.transformer.wte(x1)
+        x2 = self.transformer.wte(x2)
+        x3 = self.transformer.wte(x3)
+        x4 = self.transformer.wte(x4)
+        x5 = self.transformer.wte(x5)
+        x6 = self.transformer.wte(x6)
+        x7 = self.transformer.wte(x7)
+
+        # concat whisper feature
+        input_emb = self.concat_feat(
+            audio_features, None, [x0, x1, x2, x3, x4, x5, x6, x7], whisper_lens, task
+        )
+        x_concat = torch.concat(input_emb, 0)
+        x = torch.mean(x_concat, 0, keepdim=True)
 
         if self.config.scale_embeddings:
             x = x * (self.config.n_embd**0.5)
