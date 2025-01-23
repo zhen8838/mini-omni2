@@ -1,6 +1,7 @@
 import sys
 import os
 import lightning as L
+import numpy as np
 import torch
 import glob
 import time
@@ -86,15 +87,25 @@ def get_input_ids_TT(text, text_tokenizer):
 
 def get_input_ids_whisper(
     mel, leng, whispermodel: whisper.Whisper, device, 
+    step:int,
+    export_model=False,
+    export_data=False,
     special_token_a=_answer_a, special_token_t=_answer_t,
 ):
-
+    mel = mel.unsqueeze(0).to(device)
+    if export_data:
+        os.makedirs(f"output/datas/whisper/calibs", exist_ok=True)
+        np.save(f"./output/datas/whisper/calibs/mel_{step}.npy", mel.numpy())
+    if export_model:
+        os.makedirs(f"output/models/whisper", exist_ok=True)
+        if not os.path.exists('output/models/whisper/whisper.onnx"'):
+          with torch.no_grad():
+            torch.onnx.export(whispermodel.encoder, (mel), "output/models/whisper/whisper.onnx", input_names=['mel'], output_names=['audio_feature'])
     with torch.no_grad():
-        mel = mel.unsqueeze(0).to(device)
         # audio_feature = whisper.decode(whispermodel,mel, options).audio_features
-        audio_feature = whispermodel.embed_audio(mel)[0][:leng]
+        audio_feature = whispermodel.encoder(mel)[:, :leng, :]
 
-    T = audio_feature.size(0)
+    T = audio_feature.size(1)
     input_ids = []
     for i in range(7):
         input_ids_item = []
@@ -104,7 +115,7 @@ def get_input_ids_whisper(
         input_ids.append(torch.tensor(input_ids_item).unsqueeze(0))
     input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, special_token_t])
     input_ids.append(input_id_T.unsqueeze(0))
-    return audio_feature.unsqueeze(0), input_ids
+    return audio_feature, input_ids
 
 
 def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
@@ -363,7 +374,7 @@ def load_model(ckpt_dir, device):
     whisper_model_path = ckpt_dir + "/small.pt"
     if not os.path.exists(whisper_model_path):
         whisper_model_path = "small"
-    whispermodel = whisper.load_model(whisper_model_path).to(device)
+    whispermodel = whisper.load_model(whisper_model_path).to(device).eval()
     text_tokenizer = Tokenizer(ckpt_dir)
     fabric = L.Fabric(devices=1, strategy="auto")
     config = Config.from_file(ckpt_dir + "/model_config.yaml")
@@ -596,7 +607,7 @@ def test_infer():
             step = 0
             for path in test_audio_list:
                   mel, leng = load_audio(path)
-                  audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device)
+                  audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device, step, EXPORT_MODEL, EXPORT_DATA)
                   text = A1_A2(
                       fabric,
                       audio_feature,
@@ -707,7 +718,13 @@ def test_infer():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == 'export':
+    if len(sys.argv) > 1:
+      if sys.argv[1] == 'export':
         EXPORT_DATA = True
         EXPORT_MODEL = True
+      if sys.argv[1] == 'export_data':
+        EXPORT_DATA = True
+      if sys.argv[1] == 'export_model':
+        EXPORT_MODEL = True
+      
     test_infer()

@@ -141,10 +141,9 @@ def next_token_A1T2_k230(
     if export_model:
         os.makedirs(f"output/models/lit_gpt", exist_ok=True)
         if not os.path.exists('output/models/lit_gpt/lit_gpt.onnx'):
-          torch.onnx.export(model, (input_embs, past_ks, past_vs, input_pos), "output/models/lit_gpt/lit_gpt.onnx", input_names=['input_embs', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={'input_embs': {2:'seq_len'},'past_keys': {3:'hist_len'},'past_values': {3:'hist_len'}, 'input_pos': {0:'seq_len'}})
-    logits_a, logit_t, next_ks, next_vs = model(
-        input_embs, past_ks, past_vs, input_pos
-    ) # 这里的whisper len可以通过audio feature来算
+          torch.onnx.export(model, (input_embs, past_ks, past_vs, input_pos), "output/models/lit_gpt/lit_gpt.onnx", input_names=['input_embs', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={'input_embs': {2:'seq_len'},'past_keys': {3:'history_len'},'past_values': {3:'history_len'}, 'input_pos': {0:'seq_len'}})
+
+    logits_a, logit_t, next_ks, next_vs = model(input_embs, past_ks, past_vs, input_pos)
 
     next_audio_tokens = []
     for logit_a in logits_a:
