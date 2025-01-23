@@ -714,17 +714,17 @@ def generate_AA(
     if export_model:
         os.makedirs(f"output/models/adapter", exist_ok=True)
         if not os.path.exists('output/models/adapter/adapter.onnx"'):
-          torch.onnx.export(model.whisper_adapter, (audio_features), "output/models/adapter/adapter.onnx", input_names=['audio_features'], output_names=['audio_embs'])
-    audio_embs = model.whisper_adapter(audio_features)
+          torch.onnx.export(model.whisper_adapter, (audio_features), "output/models/adapter/adapter.onnx", input_names=['audio_features'], output_names=['audio_embs'], dynamic_axes={'audio_features':{1:"audio_len"}})
+    audio_embs = model.whisper_adapter(audio_features) # [1,audio_len,768] -> xxxx
 
-    input_ids:torch.Tensor = torch.stack(input_ids)
+    input_ids:torch.Tensor = torch.stack(input_ids) # [8,1,seq_len]
     if export_data:
         os.makedirs(f"output/datas/wte/calibs", exist_ok=True)
         np.save(f"./output/datas/wte/calibs/input_ids_{step}_1.npy", input_ids.numpy())
     if export_model:
         os.makedirs(f"output/models/wte", exist_ok=True)
         if not os.path.exists('output/models/wte/wte.onnx"'):
-          torch.onnx.export(model.transformer.wte, (input_ids), "output/models/wte/wte.onnx",input_names=['input_ids'])
+          torch.onnx.export(model.transformer.wte, (input_ids), "output/models/wte/wte.onnx",input_names=['input_ids'], dynamic_axes={'input_ids': {2:'seq_len'}})
     input_embs = model.transformer.wte(input_ids)
 
     input_embs = model.concat_feat(audio_embs, input_embs)
