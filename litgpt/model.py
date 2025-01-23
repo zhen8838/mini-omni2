@@ -102,14 +102,12 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def concat_feat(self, audio_feature:torch.Tensor, clip_feature:None, input_ids: List[torch.Tensor], task):
-        assert audio_feature.size(0) == 1
-        if task is not None:
-          assert len(task) == 1
-          assert task[0] == 'A1T2'
-        audio_len = audio_feature.size(1)
+    def concat_feat(self, audio_emb:torch.Tensor, input_embs: torch.Tensor):
+        audio_len = audio_emb.size(1)
         for i in range(7):
-          input_ids[i] = torch.concat((input_ids[i][0:1, 0:1, :], audio_feature[0:1, :audio_len, :], input_ids[i][0:1, audio_len+1:, :]), 1)
+            input_embs[i,0,1:audio_len+1,:] = audio_emb[0,:audio_len].clone() 
+        # for i in range(7):
+        #   input_ids[i] = torch.concat((input_ids[i][0:1, 0:1, :], audio_feature[0:1, :audio_len, :], input_ids[i][0:1, audio_len+1:, :]), 1)
         # old implement
         # for j in range(len(T)):
         #     if task[j] != 'T1T2' and task[j] != 'T1A2' and task[j]!='ImageQA_T' and not task[j] == 'ImageCAP' and not task[j] == 'ImageQA_A' and not task[j] == 'ImageQA_AT':
@@ -128,21 +126,18 @@ class GPT(nn.Module):
         #         for i in range(7):
         #             input_ids[i][j,1:51,:] = clip_feature[j].clone()
 
-        return input_ids
-
+        return input_embs
+    
     def forward(
         self,
-        audio_features: torch.Tensor, # [1, audio_len, 896]
-        input_ids: torch.Tensor, # [8, 1, seq_len, 896]
+        input_embs: torch.Tensor, # [8, 1, seq_len, 896]
         past_ks: torch.Tensor, # [24, 1, 14, hist_len, 64]
         past_vs: torch.Tensor, # [24, 1, 14, hist_len, 64]
-        clip_features: Optional[torch.Tensor] = None, 
         input_pos: Optional[torch.Tensor] = None, # [seq_len]
-        task: Optional[str] = None,
     ) -> torch.Tensor:
 
         show = False
-        seq_len = input_ids.size(2)
+        seq_len = input_embs.size(2)
         hist_len = past_ks.size(3)
         if self.max_seq_length < seq_len:
             raise ValueError(
@@ -200,15 +195,7 @@ class GPT(nn.Module):
         # x = (x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7) / 8
 
         # new impl
-        assert clip_features is None
-        xinput_ids = self.transformer.wte(input_ids)
-        
-        # concat whisper feature
-        input_emb = self.concat_feat(
-            audio_features, None, [xinput_ids[0], xinput_ids[1], xinput_ids[2], xinput_ids[3], xinput_ids[4], xinput_ids[5], xinput_ids[6], xinput_ids[7]], task
-        )
-        x_concat = torch.concat(input_emb, 0)
-        x = torch.mean(x_concat, 0, keepdim=True)
+        x = torch.mean(input_embs, 0, keepdim=False)
 
         if self.config.scale_embeddings:
             x = x * (self.config.n_embd**0.5)

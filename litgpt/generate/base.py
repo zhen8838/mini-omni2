@@ -1,7 +1,9 @@
 # Copyright Lightning AI. Licensed under the Apache License 2.0, see LICENSE file.
 
+import os
 from typing import Any, Literal, Optional
 
+import numpy as np
 import torch
 # import torch._dynamo.config
 # import torch._inductor.config
@@ -120,26 +122,35 @@ def next_token_A1T2(
 
 def next_token_A1T2_k230(
     model: GPT,
-    audio_features: torch.tensor,
-    input_ids: list,
-    task: list,
+    input_embs: torch.Tensor,
     input_pos: torch.Tensor,
     past_ks: torch.Tensor,
     past_vs: torch.Tensor,
+    step: int,
+    sub_step: int,
+    export_model=False,
+    export_data=False,
     **kwargs: Any,
 ) -> torch.Tensor:
-    input_pos = input_pos.to(model.device)
-    input_ids = torch.stack(input_ids)
-    # torch.onnx.export(model, (audio_features, input_ids, past_ks, past_vs, None, input_pos, task), "output/models/lit_gpt/lit_gpt.onnx", input_names=['audio_features', 'input_ids', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={"audio_features": {1: "audio_len"}, 'input_ids': {2:'seq_len'},'past_keys': {3:'hist_len'},'past_values': {3:'hist_len'}, 'input_pos': {0:'seq_len'}})
+    if export_data:
+        os.makedirs(f"output/datas/lit_gpt/calibs", exist_ok=True)
+        np.save(f"output/datas/lit_gpt/calibs/{step}_{sub_step}_0_input_embs.npy", input_embs.numpy())
+        np.save(f"output/datas/lit_gpt/calibs/{step}_{sub_step}_1_past_ks.npy", past_ks.numpy())
+        np.save(f"output/datas/lit_gpt/calibs/{step}_{sub_step}_2_past_vs.npy", past_vs.numpy())
+        np.save(f"output/datas/lit_gpt/calibs/{step}_{sub_step}_3_input_pos.npy", input_pos.numpy())
+    if export_model:
+        os.makedirs(f"output/models/lit_gpt", exist_ok=True)
+        if not os.path.exists('output/models/lit_gpt/lit_gpt.onnx'):
+          torch.onnx.export(model, (input_embs, past_ks, past_vs, input_pos), "output/models/lit_gpt/lit_gpt.onnx", input_names=['input_embs', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={'input_embs': {2:'seq_len'},'past_keys': {3:'hist_len'},'past_values': {3:'hist_len'}, 'input_pos': {0:'seq_len'}})
     logits_a, logit_t, next_ks, next_vs = model(
-        audio_features, input_ids, past_ks, past_vs, None, input_pos, task
+        input_embs, past_ks, past_vs, input_pos
     ) # 这里的whisper len可以通过audio feature来算
 
     next_audio_tokens = []
     for logit_a in logits_a:
-        next_a = sample(logit_a, **kwargs).to(dtype=input_ids[0].dtype)
+        next_a = sample(logit_a, **kwargs).to(dtype=torch.int64)
         next_audio_tokens.append(next_a)
-    next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
+    next_t = sample(logit_t, **kwargs).to(dtype=torch.int64)
     return next_audio_tokens, next_t, next_ks, next_vs
 
 def next_token_A1T1(
@@ -677,6 +688,7 @@ def generate_AA(
     input_ids: list,
     leng,
     task,
+    step,
     max_returned_tokens: int = 2048,
     *,
     temperature: float = 1.0,
@@ -688,24 +700,46 @@ def generate_AA(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
+    export_model=False,
+    export_data=False,
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
     device = input_ids[0].device
 
     output = [[] for _ in range(8)]
-    # torch.onnx.export(model.whisper_adapter, (audio_features), "output/models/whisper_adapter/whisper_adapter.onnx",input_names=['audio_features'])
-    x_a = model.whisper_adapter(audio_features)
+    if export_data:
+        os.makedirs(f"output/datas/adapter/calibs", exist_ok=True)
+        np.save(f"./output/datas/adapter/calibs/audio_features_{step}.npy", audio_features.numpy())
+    if export_model:
+        os.makedirs(f"output/models/adapter", exist_ok=True)
+        if not os.path.exists('output/models/adapter/adapter.onnx"'):
+          torch.onnx.export(model.whisper_adapter, (audio_features), "output/models/adapter/adapter.onnx", input_names=['audio_features'], output_names=['audio_embs'])
+    audio_embs = model.whisper_adapter(audio_features)
+
+    input_ids:torch.Tensor = torch.stack(input_ids)
+    if export_data:
+        os.makedirs(f"output/datas/wte/calibs", exist_ok=True)
+        np.save(f"./output/datas/wte/calibs/input_ids_{step}_1.npy", input_ids.numpy())
+    if export_model:
+        os.makedirs(f"output/models/wte", exist_ok=True)
+        if not os.path.exists('output/models/wte/wte.onnx"'):
+          torch.onnx.export(model.transformer.wte, (input_ids), "output/models/wte/wte.onnx",input_names=['input_ids'])
+    input_embs = model.transformer.wte(input_ids)
+
+    input_embs = model.concat_feat(audio_embs, input_embs)
     past_ks = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
     past_vs = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
-    tokens_A, token_T, past_ks, past_vs  = next_token_A1T2_k230(
+    tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
         model,
-        x_a,
-        input_ids,
-        ["A1T2"],
-        input_pos=torch.arange(0, T, device=device),
-        past_ks=past_ks,
-        past_vs=past_vs,
+        input_embs,
+        torch.arange(0, T, device=device),
+        past_ks,
+        past_vs,
+        step,
+        1,
+        export_model,
+        export_data,
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
@@ -717,7 +751,7 @@ def generate_AA(
     input_pos = torch.tensor([T], device=device)
 
     text_end = False
-    for _ in tqdm(range(2, max_returned_tokens - T + 1)):
+    for sub_step in tqdm(range(2, max_returned_tokens - T + 1)):
         # ring shift
         model_input_ids = []
         for i in range(7):
@@ -728,15 +762,21 @@ def generate_AA(
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-
+        model_input_ids = torch.stack(model_input_ids)
+        if export_data:
+            os.makedirs(f"output/datas/wte/calibs", exist_ok=True)
+            np.save(f"./output/datas/wte/calibs/input_ids_{step}_{sub_step}.npy", model_input_ids.numpy())
+        input_embs = model.transformer.wte(model_input_ids)
         tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
             model,
-            torch.empty([1,0,896], dtype=torch.float32, device=device),
-            model_input_ids,
-            None,
-            input_pos=input_pos,
-            past_ks=past_ks,
-            past_vs=past_vs,
+            input_embs,
+            input_pos,
+            past_ks,
+            past_vs,
+            step,
+            sub_step,
+            export_model,
+            export_data,
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,

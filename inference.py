@@ -1,3 +1,4 @@
+import sys
 import os
 import lightning as L
 import torch
@@ -52,6 +53,8 @@ _answer_a = audio_vocabsize + 3
 _split = audio_vocabsize + 4
 _image = audio_vocabsize + 5
 _eoimage = audio_vocabsize + 6
+EXPORT_DATA = False
+EXPORT_MODEL = False
 
 
 def get_input_ids_TA(text, text_tokenizer):
@@ -218,12 +221,15 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, st
           snacmodel, out_dir=None):
     with fabric.init_tensor():
         model.set_kv_cache(batch_size=1, device=audio_feature.device)
+    global EXPORT_MODEL
+    global EXPORT_DATA
     tokenlist = generate_AA(
         model,
         audio_feature,
         input_ids,
         [leng],
         ["A1T2"],
+        step,
         max_returned_tokens=2048,
         temperature=0.9,
         top_k=1,
@@ -233,6 +239,8 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, st
         shift=padded_text_vocabsize,
         include_prompt=True,
         generate_text=True,
+        export_model=EXPORT_MODEL,
+        export_data=EXPORT_DATA
     )
     audiolist = reconscruct_snac(tokenlist)
     tokenlist = tokenlist[-1]
@@ -254,6 +262,7 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, st
         24000,
     )
     model.clear_kv_cache()
+    EXPORT_MODEL = False # for only once.
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
 
@@ -698,4 +707,7 @@ def test_infer():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == 'export':
+        EXPORT_DATA = True
+        EXPORT_MODEL = True
     test_infer()
