@@ -1,3 +1,4 @@
+import time
 from scipy.special import softmax
 from collections import namedtuple
 from typing import Any, Optional
@@ -9,7 +10,8 @@ import onnx
 import onnxruntime
 import glob
 import os
-from utils.snac_utils import layershift
+from utils.snac_utils import layershift, reconscruct_snac, reconstruct_tensors
+import soundfile as sf
 import whisper
 import numpy as np
 
@@ -268,7 +270,7 @@ def generate_AA(
   return output
 
 
-def A1_A2(audio_feature: np.ndarray, input_ids: np.ndarray, leng: int, adapter: onnxruntime.InferenceSession, wte: onnxruntime.InferenceSession, gpt: onnxruntime.InferenceSession, text_tokenizer, step):
+def A1_A2(audio_feature: np.ndarray, input_ids: np.ndarray, leng: int, adapter: onnxruntime.InferenceSession, wte: onnxruntime.InferenceSession, gpt: onnxruntime.InferenceSession, snac: onnxruntime.InferenceSession, text_tokenizer, out_dir, step):
   tokenlist = generate_AA(
       audio_feature,
       input_ids,
@@ -286,30 +288,35 @@ def A1_A2(audio_feature: np.ndarray, input_ids: np.ndarray, leng: int, adapter: 
       include_prompt=True,
       generate_text=True,
   )
-  # audiolist = reconscruct_snac(tokenlist)
+  
+  audiolist = reconscruct_snac(tokenlist)
   tokenlist = tokenlist[-1]
   if text_vocabsize in tokenlist:
-    tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
-  # if out_dir is None:
-  #   out_dir = "./output/default/A1-A2"
-  # else:
-  #   out_dir = out_dir + "/A1-A2"
-  # if not os.path.exists(out_dir):
-  #   os.makedirs(out_dir)
+      tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
+  if out_dir is None:
+      out_dir = "./output/default_onnx/A1-A2"
+  else:
+      out_dir = out_dir + "/A1-A2"
+  if not os.path.exists(out_dir):
+      os.makedirs(out_dir)
+      
+  audio = reconstruct_tensors(audiolist)
+  (audio_hat,) = snac.run(None, {f'audio_{j}': audio[j].numpy() for j in range(len(audio))})
+  sf.write(
+      f"{out_dir}/{step:02d}.wav",
+      audio_hat.squeeze(),
+      24000,
+  )
 
-  # audio = reconstruct_tensors(audiolist)
-  # with torch.inference_mode():
-  #   audio_hat = snacmodel.decode(audio)
-  # sf.write(
-  #     f"{out_dir}/{step:02d}.wav",
-  #     audio_hat.squeeze().cpu().numpy(),
-  #     24000,
-  # )
-  # model.clear_kv_cache().
+  EXPORT_MODEL = False # for only once.
   return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
+def get_time_str():
+    time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    return time_str
 
 def main():
+  out_dir = f"./output/{get_time_str()}/onnx_infer"
   test_audio_list = sorted(glob.glob('./data/samples/output*.wav'))
   test_audio_transcripts = [
       "What is your name?",
@@ -332,6 +339,9 @@ def main():
   sessOptions = onnxruntime.SessionOptions()
   sessOptions.intra_op_num_threads = 12
   lit_gpt = onnxruntime.InferenceSession("output/models/lit_gpt/lit_gpt.onnx", sessOptions)
+  sessOptions = onnxruntime.SessionOptions()
+  sessOptions.intra_op_num_threads = 12
+  snac = onnxruntime.InferenceSession("output/models/snac/snac.onnx", sessOptions)
   text_tokenizer = Tokenizer('checkpoint')
 
   print("===============================================================")
@@ -347,7 +357,9 @@ def main():
         apapter,
         wte,
         lit_gpt,
+        snac,
         text_tokenizer,
+        out_dir,
         step,
     )
     print(f"input: {test_audio_transcripts[step]}")

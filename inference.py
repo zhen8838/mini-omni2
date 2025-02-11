@@ -227,6 +227,13 @@ def A1_T2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
     )
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
+class SnacModelDecoder(torch.nn.Module):
+    def __init__(self, snacmodel):
+        super().__init__()
+        self.snacmodel = snacmodel
+
+    def forward(self, audio):
+        return self.snacmodel.decode(audio)
 
 def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, step,
           snacmodel, out_dir=None):
@@ -266,6 +273,28 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, st
         
     audio = reconstruct_tensors(audiolist)
     with torch.inference_mode():
+        if EXPORT_DATA:
+          os.makedirs(f"output/datas/snac/calibs", exist_ok=True)
+          for j in range(len(audio)):
+            print(j, step, audio[j].shape)
+            np.save(f"./output/datas/snac/calibs/audio_{j}_{step}.npy", audio[j].numpy())
+        if EXPORT_MODEL:
+          """
+          note need modify /Users/lisa/miniforge3/envs/omni/lib/python3.10/site-packages/snac/layers.py:170
+          # @torch.jit.script
+          def snake(x, alpha):
+              # shape = x.shape
+              # tmp_shape = [shape[0], shape[1], -1]
+              # x = x.reshape(tmp_shape)
+              x = x + (alpha + 1e-9).reciprocal() * torch.sin(alpha * x).pow(2)
+              # x = x.reshape(shape)
+              return x
+          """ 
+
+          os.makedirs(f"output/models/snac", exist_ok=True)
+          if not os.path.exists('output/models/snac/snac.onnx"'):
+            snac_decoder = SnacModelDecoder(snacmodel)
+            torch.onnx.export(snac_decoder, (audio), "output/models/snac/snac.onnx", input_names=[f'audio_{j}' for j in range(len(audio))], output_names=['audio_hat'], dynamic_axes={f'audio_{j}': {1: f'audo_{j}_len'} for j in range(len(audio))})
         audio_hat = snacmodel.decode(audio)
     sf.write(
         f"{out_dir}/{step:02d}.wav",
