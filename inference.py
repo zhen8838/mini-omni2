@@ -276,8 +276,7 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, st
         if EXPORT_DATA:
           os.makedirs(f"output/datas/snac/calibs", exist_ok=True)
           for j in range(len(audio)):
-            print(j, step, audio[j].shape)
-            np.save(f"./output/datas/snac/calibs/audio_{j}_{step}.npy", audio[j].numpy())
+            np.save(f"./output/datas/snac/calibs/{step}_audio_{j}.npy", audio[j].numpy())
         if EXPORT_MODEL:
           """
           note need modify /Users/lisa/miniforge3/envs/omni/lib/python3.10/site-packages/snac/layers.py:170
