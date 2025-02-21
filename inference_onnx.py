@@ -157,7 +157,7 @@ def next_token_A1T2(
   # assert np.allclose(next_vs, next_vs_golden)
 
   next_audio_tokens = []
-  for logit_a in logits_a:
+  for logit_a in np.split(logits_a, 7, -1):
     next_a = sample(logit_a, **kwargs)
     next_audio_tokens.append(next_a)
   next_t = sample(logit_t, **kwargs)

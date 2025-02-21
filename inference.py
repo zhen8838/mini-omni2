@@ -100,7 +100,7 @@ def get_input_ids_whisper(
         os.makedirs(f"output/models/whisper", exist_ok=True)
         if not os.path.exists('output/models/whisper/whisper.onnx"'):
           with torch.no_grad():
-            torch.onnx.export(whispermodel.encoder, (mel), "output/models/whisper/whisper.onnx", input_names=['mel'], output_names=['audio_feature'])
+            torch.onnx.export(whispermodel.encoder, (mel), "output/models/whisper/whisper.onnx", input_names=['mel'], output_names=['audio_feature'], dynamic_axes={'mel': {2: 'audio_len'}})
     with torch.no_grad():
         # audio_feature = whisper.decode(whispermodel,mel, options).audio_features
         audio_feature = whispermodel.encoder(mel)[:, :leng, :]

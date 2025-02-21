@@ -146,7 +146,7 @@ def next_token_A1T2_k230(
     logits_a, logit_t, next_ks, next_vs = model(input_embs, past_ks, past_vs, input_pos)
 
     next_audio_tokens = []
-    for logit_a in logits_a:
+    for logit_a in torch.split(logits_a, model.config.audio_vocab_size, -1):
         next_a = sample(logit_a, **kwargs).to(dtype=torch.int64)
         next_audio_tokens.append(next_a)
     next_t = sample(logit_t, **kwargs).to(dtype=torch.int64)

@@ -226,11 +226,12 @@ class GPT(nn.Module):
             for i in range(7):
                 xa.append(x[..., audio_vocab_size * i : audio_vocab_size * (i + 1)])
         else:
-            xa = []
-            for i in range(7):
-                xa.append(x_ori[..., text_vocab_size + audio_vocab_size * i : text_vocab_size + audio_vocab_size * (i + 1)])
+            # xa = []
+            # for i in range(7):
+            #     xa.append(x_ori[..., text_vocab_size + audio_vocab_size * i : text_vocab_size + audio_vocab_size * (i + 1)])
+            xa = x_ori[..., text_vocab_size: text_vocab_size + audio_vocab_size * 8]
 
-        return torch.stack(xa), xt, next_ks, next_vs
+        return xa, xt, next_ks, next_vs
 
     @classmethod
     def from_name(cls, name: str, **kwargs: Any) -> Self:
