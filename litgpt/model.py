@@ -37,7 +37,7 @@ class GPT(nn.Module):
             self.transformer = nn.ModuleDict(
                 dict(
                     wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
-                    h=nn.ModuleList(Block(config) for _ in range(config.n_layer)),
+                    h=nn.ModuleList(Block(i,config) for i in range(config.n_layer)),
                     post_adapter=nn.ModuleList(
                         Block(config) for _ in range(config.post_adapter_layers)
                     ),
@@ -54,7 +54,7 @@ class GPT(nn.Module):
             self.transformer = nn.ModuleDict(
                 dict(
                     wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
-                    h=nn.ModuleList(Block(config) for _ in range(config.n_layer)),
+                    h=nn.ModuleList(Block(i,config) for i in range(config.n_layer)),
                     ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
                 )
             )
@@ -214,7 +214,6 @@ class GPT(nn.Module):
 
         x_ori = x
         x_ori = self.transformer.ln_f(x_ori) # 这一步一般是rms norm
-        x_ori = x_ori[:, -1:, :]
         x_ori = self.lm_head(x_ori)  # (b, t, vocab_size)
         xt = x_ori[..., :text_vocab_size]
 
@@ -301,7 +300,7 @@ class visionMLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, i, config: Config) -> None:
         super().__init__()
         if not config.parallel_residual and config.shared_attention_norm:
             raise NotImplementedError(
@@ -319,6 +318,7 @@ class Block(nn.Module):
         self.mlp = config.mlp_class(config)
 
         self.config = config
+        self.i = i
 
     def forward(
         self,
@@ -348,6 +348,9 @@ class Block(nn.Module):
 
         x_normed = self.norm_1(x)
         attention_output, ck, cv  = self.attn(x_normed, cos, sin, past_k, past_v, mask, input_pos)
+        if self.i == 23:
+          attention_output = attention_output[:,-1:,:]
+          x = x[:,-1:,:]
 
         if self.config.parallel_residual:
             x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
