@@ -213,7 +213,8 @@ class GPT(nn.Module):
         audio_vocab_size = self.config.audio_vocab_size
 
         x_ori = x
-        x_ori = self.transformer.ln_f(x_ori)
+        x_ori = self.transformer.ln_f(x_ori) # 这一步一般是rms norm
+        x_ori = x_ori[:, -1:, :]
         x_ori = self.lm_head(x_ori)  # (b, t, vocab_size)
         xt = x_ori[..., :text_vocab_size]
 
