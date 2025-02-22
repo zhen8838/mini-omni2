@@ -402,7 +402,13 @@ class CausalSelfAttention(nn.Module):
         qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
 
         # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2)
+        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2) # [1, 2, 9, 101, 64] => q: [1, 2, 7, 101, 64], k: [1, 2, 1, 101, 64],  v: [1, 2, 1, 101, 64], 
+
+        # first apply RoPE to reduce the computation cost
+        q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
+        k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
+        q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
+        k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
 
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
@@ -410,21 +416,19 @@ class CausalSelfAttention(nn.Module):
         if self.config.n_query_groups != self.config.n_head and (
             input_pos is None or self.config.n_query_groups != 1
         ):
-            k = k.expand(
-                B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
-            )
-            v = v.expand(
-                B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
-            )
+            k = torch.repeat_interleave(k, q_per_kv, dim=2)
+            v = torch.repeat_interleave(v, q_per_kv, dim=2)
+            # k = k.expand(
+            #     B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
+            # ) # k: [1, 2, 1, 101, 64] -> k: [1, 2, 7, 101, 64]
+            # v = v.expand(
+            #     B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
+            # ) # v: [1, 2, 1, 101, 64] -> k: [1, 2, 7, 101, 64]
 
-        q = q.reshape(B, -1, T, self.config.head_size)  # (B, nh_q, T, hs)
-        k = k.reshape(B, -1, T, self.config.head_size)  # (B, nh_k, T, hs)
-        v = v.reshape(B, -1, T, self.config.head_size)  # (B, nh_v, T, hs)
-
-        q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
-        k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
-        q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
-        k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
+        # we use the repeat, so that don't need additional reshape
+        q = q.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_q, T, hs)
+        k = k.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_k, T, hs)
+        v = v.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_v, T, hs)
 
         if input_pos is not None:
             if not isinstance(self.kv_cache, KVCache):
