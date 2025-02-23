@@ -210,8 +210,8 @@ def generate_AA(
   # input_embs_concat_golden = np.load(f"output/compare/adapter/input_embs_concat{step}.npy")
   # assert np.allclose(input_embs_concat_golden, input_embs_concat)
 
-  past_ks = np.empty([24, 1, 14, 0, 64], dtype=np.float32)  # 1,14,2048,64
-  past_vs = np.empty([24, 1, 14, 0, 64], dtype=np.float32)  # 1,14,2048,64
+  past_ks = np.empty([24, 1, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
+  past_vs = np.empty([24, 1, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
   tokens_A, token_T, past_ks, past_vs = next_token_A1T2(
       lit_gpt,
       input_embs_concat,
