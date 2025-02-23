@@ -727,8 +727,8 @@ def generate_AA(
     input_embs = model.transformer.wte(input_ids)
 
     input_embs = model.concat_feat(audio_embs, input_embs)
-    past_ks = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
-    past_vs = torch.empty([24,1,14,0,64],dtype=torch.float32,device=device) # 1,14,2048,64
+    past_ks = torch.empty([24,1,2,1,0,64],dtype=torch.float32,device=device) # gqa
+    past_vs = torch.empty([24,1,2,1,0,64],dtype=torch.float32,device=device)
     tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
         model,
         input_embs,

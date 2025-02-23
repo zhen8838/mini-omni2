@@ -11,6 +11,7 @@ from typing import Any, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from typing_extensions import Self
 from litgpt.config import Config
 
@@ -131,14 +132,14 @@ class GPT(nn.Module):
     def forward(
         self,
         input_embs: torch.Tensor, # [8, 1, seq_len, 896]
-        past_ks: torch.Tensor, # [24, 1, 14, hist_len, 64]
-        past_vs: torch.Tensor, # [24, 1, 14, hist_len, 64]
+        past_ks: torch.Tensor, # [24, 1, 2, 1, hist_len, 64]
+        past_vs: torch.Tensor, # [24, 1, 2, 1, hist_len, 64]
         input_pos: Optional[torch.Tensor] = None, # [seq_len]
     ) -> torch.Tensor:
 
         show = False
         seq_len = input_embs.size(2)
-        hist_len = past_ks.size(3)
+        hist_len = past_ks.size(4)
         if self.max_seq_length < seq_len:
             raise ValueError(
                 f"Cannot forward sequence of length {seq_len}, max seq length is only {self.max_seq_length}."
@@ -149,7 +150,7 @@ class GPT(nn.Module):
             sin = self.sin.index_select(0, input_pos)
             if self.mask_cache is None:
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = self.mask_cache.index_select(2, input_pos)[:,:,:,:hist_len+seq_len]
+            mask = self.mask_cache.index_select(3, input_pos)[...,:hist_len+seq_len]
         else:
             cos = self.cos[:seq_len]
             sin = self.sin[:seq_len]
@@ -204,10 +205,10 @@ class GPT(nn.Module):
         next_vs = []
         for i, block in enumerate(self.transformer.h):
             x, ck, cv = block(x, cos, sin, past_ks[i], past_vs[i], mask, input_pos)
-            next_ks.append(torch.unsqueeze(ck, 0))
-            next_vs.append(torch.unsqueeze(cv, 0))
-        next_ks = torch.concat(next_ks, 0)
-        next_vs = torch.concat(next_vs, 0)
+            next_ks.append(ck)
+            next_vs.append(cv)
+        next_ks = torch.stack(next_ks)
+        next_vs = torch.stack(next_vs)
 
         text_vocab_size = self.config.text_vocab_size
         audio_vocab_size = self.config.audio_vocab_size
@@ -413,11 +414,11 @@ class CausalSelfAttention(nn.Module):
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
         # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-        if self.config.n_query_groups != self.config.n_head and (
-            input_pos is None or self.config.n_query_groups != 1
-        ):
-            k = torch.repeat_interleave(k, q_per_kv, dim=2)
-            v = torch.repeat_interleave(v, q_per_kv, dim=2)
+        # if self.config.n_query_groups != self.config.n_head and (
+        #     input_pos is None or self.config.n_query_groups != 1
+        # ):
+        #     k = torch.repeat_interleave(k, q_per_kv, dim=2)
+        #     v = torch.repeat_interleave(v, q_per_kv, dim=2)
             # k = k.expand(
             #     B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
             # ) # k: [1, 2, 1, 101, 64] -> k: [1, 2, 7, 101, 64]
@@ -425,17 +426,18 @@ class CausalSelfAttention(nn.Module):
             #     B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
             # ) # v: [1, 2, 1, 101, 64] -> k: [1, 2, 7, 101, 64]
 
-        # we use the repeat, so that don't need additional reshape
-        q = q.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_q, T, hs)
-        k = k.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_k, T, hs)
-        v = v.reshape(B, self.config.n_query_groups * q_per_kv, T, self.config.head_size)  # (B, nh_v, T, hs)
 
         if input_pos is not None:
             if not isinstance(self.kv_cache, KVCache):
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
             k, v = self.kv_cache(past_k, past_v, k, v)
 
-        y = self.scaled_dot_product_attention(q, k, v, mask)
+        # we use the repeat, so that don't need additional reshape
+        # q = q.reshape(B, self.config.n_query_groups * q_per_kv, -1, self.config.head_size)  # (B, nh_q, -1, hs)
+        # k = k.reshape(B, self.config.n_query_groups * q_per_kv, -1, self.config.head_size)  # (B, nh_k, -1, hs)
+        # v = v.reshape(B, self.config.n_query_groups * q_per_kv, -1, self.config.head_size)  # (B, nh_v, T, hs)
+
+        y = self.scaled_dot_product_attention(q, k, v, mask[0])
 
         y = y.reshape(
             B, T, self.config.head_size * self.config.n_head
@@ -454,8 +456,8 @@ class CausalSelfAttention(nn.Module):
         scale = 1.0 / math.sqrt(self.config.head_size)
         y = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, scale=scale, is_causal=mask is None
-        )
-        return y.transpose(1, 2)
+        ) # [1, 2, 7, seq_len, head_size]
+        return torch.permute(y, [0, 3, 1, 2, 4])
 
     def build_kv_cache(
         self,
@@ -633,9 +635,9 @@ class KVCache(nn.Module):
         # k = self.k.index_copy_(2, input_pos, k)
         # v = self.v.index_copy_(2, input_pos, v)
         # return k, v
-        # k,v, shape: [1, 14, seq_len+1, 64 ]
-        ck = torch.concat((past_k, k), 2)
-        cv = torch.concat((past_v, v), 2)
+        # k,v, shape: [1, 2, 1, seq_len+1, 64 ]
+        ck = torch.concat((past_k, k), -2)
+        cv = torch.concat((past_v, v), -2)
         return ck, cv
 
     # def reset_parameters(self) -> None:
@@ -647,7 +649,7 @@ def build_mask_cache(
     max_seq_length: int, device: Optional[torch.device] = None
 ) -> torch.Tensor:
     ones = torch.ones((max_seq_length, max_seq_length), device=device, dtype=torch.bool)
-    return torch.tril(ones).unsqueeze(0).unsqueeze(0)
+    return torch.tril(ones).unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
 
 class RMSNorm(torch.nn.Module):
