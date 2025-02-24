@@ -1,0 +1,4 @@
+[submodule "whisper"]
+    path = whisper
+    url = https://github.com/openai/whisper.git
+    tag = v20240930
