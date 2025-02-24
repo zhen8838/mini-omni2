@@ -1,4 +1,4 @@
 [submodule "whisper"]
     path = whisper
-    url = https://github.com/openai/whisper.git
-    tag = v20240930
+    url = https://github.com/zhen8838/whisper.git
+    branch = k230
