@@ -131,15 +131,15 @@ class GPT(nn.Module):
     
     def forward(
         self,
-        input_embs: torch.Tensor, # [8, 1, seq_len, 896]
-        past_ks: torch.Tensor, # [24, 1, 2, 1, hist_len, 64]
-        past_vs: torch.Tensor, # [24, 1, 2, 1, hist_len, 64]
+        input_embs: torch.Tensor, # [8, seq_len, 896]
+        past_ks: torch.Tensor, # [24, 2, 1, hist_len, 64]
+        past_vs: torch.Tensor, # [24, 2, 1, hist_len, 64]
         input_pos: Optional[torch.Tensor] = None, # [seq_len]
     ) -> torch.Tensor:
 
         show = False
-        seq_len = input_embs.size(2)
-        hist_len = past_ks.size(4)
+        seq_len = input_embs.size(1)
+        hist_len = past_ks.size(3)
         if self.max_seq_length < seq_len:
             raise ValueError(
                 f"Cannot forward sequence of length {seq_len}, max seq length is only {self.max_seq_length}."
@@ -150,7 +150,7 @@ class GPT(nn.Module):
             sin = self.sin.index_select(0, input_pos)
             if self.mask_cache is None:
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = self.mask_cache.index_select(3, input_pos)[...,:hist_len+seq_len]
+            mask = self.mask_cache.index_select(2, input_pos)[...,:hist_len+seq_len]
         else:
             cos = self.cos[:seq_len]
             sin = self.sin[:seq_len]
@@ -310,7 +310,7 @@ class Block(nn.Module):
             )
 
         self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(i, config)
         self.norm_2 = (
             None
             if config.shared_attention_norm
@@ -350,8 +350,7 @@ class Block(nn.Module):
         x_normed = self.norm_1(x)
         attention_output, ck, cv  = self.attn(x_normed, cos, sin, past_k, past_v, mask, input_pos)
         if self.i == 23:
-          attention_output = attention_output[:,-1:,:]
-          x = x[:,-1:,:]
+          x = x[-1:,:]
 
         if self.config.parallel_residual:
             x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
@@ -363,8 +362,9 @@ class Block(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, i, config: Config) -> None:
         super().__init__()
+        self.i = i
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
         # key, query, value projections for all heads, but in a batch
         self.attn = nn.Linear(config.n_embd, shape, bias=config.add_qkv_bias)
@@ -388,7 +388,7 @@ class CausalSelfAttention(nn.Module):
         mask: Optional[torch.Tensor] = None,
         input_pos: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        B, T, C = (
+        T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -398,12 +398,12 @@ class CausalSelfAttention(nn.Module):
         q_per_kv = self.config.n_head // self.config.n_query_groups
         total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
         qkv = qkv.view(
-            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+            T, self.config.n_query_groups, total_qkv, self.config.head_size
         )
-        qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
+        qkv = qkv.permute(1, 2, 0, 3)  # (B, n_query_groups, total_qkv, T, hs)
 
         # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2) # [1, 2, 9, 101, 64] => q: [1, 2, 7, 101, 64], k: [1, 2, 1, 101, 64],  v: [1, 2, 1, 101, 64], 
+        q, k, v = qkv.split((q_per_kv, 1, 1), dim=1) # [2, 9, 101, 64] => q: [2, 7, 101, 64], k: [2, 1, 101, 64],  v: [2, 1, 101, 64], 
 
         # first apply RoPE to reduce the computation cost
         q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
@@ -440,10 +440,12 @@ class CausalSelfAttention(nn.Module):
         y = self.scaled_dot_product_attention(q, k, v, mask[0])
 
         y = y.reshape(
-            B, T, self.config.head_size * self.config.n_head
+            T, self.config.head_size * self.config.n_head
         )  # re-assemble all head outputs side by side
 
         # output projection
+        if self.i == 23:
+          y = y[-1:,:]
         return self.proj(y), k, v
 
     def scaled_dot_product_attention(
@@ -457,7 +459,7 @@ class CausalSelfAttention(nn.Module):
         y = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, scale=scale, is_causal=mask is None
         ) # [1, 2, 7, seq_len, head_size]
-        return torch.permute(y, [0, 3, 1, 2, 4])
+        return torch.permute(y, [2, 0, 1, 3])
 
     def build_kv_cache(
         self,
@@ -468,7 +470,7 @@ class CausalSelfAttention(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> "KVCache":
         heads = 1 if self.config.n_query_groups == 1 else self.config.n_head
-        v_shape = (batch_size, heads, max_seq_length, self.config.head_size)
+        v_shape = (heads, max_seq_length, self.config.head_size) if batch_size == 0 else (batch_size, heads, max_seq_length, self.config.head_size)
         if rope_cache_length is None:
             if self.config.rotary_percentage != 1.0:
                 raise TypeError(
@@ -477,6 +479,10 @@ class CausalSelfAttention(nn.Module):
             k_shape = v_shape
         else:
             k_shape = (
+                heads,
+                max_seq_length,
+                rope_cache_length + self.config.head_size - self.config.rope_n_elem,
+            ) if batch_size == 0 else (
                 batch_size,
                 heads,
                 max_seq_length,
@@ -649,7 +655,7 @@ def build_mask_cache(
     max_seq_length: int, device: Optional[torch.device] = None
 ) -> torch.Tensor:
     ones = torch.ones((max_seq_length, max_seq_length), device=device, dtype=torch.bool)
-    return torch.tril(ones).unsqueeze(0).unsqueeze(0).unsqueeze(0)
+    return torch.tril(ones).unsqueeze(0).unsqueeze(0)
 
 
 class RMSNorm(torch.nn.Module):

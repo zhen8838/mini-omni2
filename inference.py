@@ -238,7 +238,7 @@ class SnacModelDecoder(torch.nn.Module):
 def A1_A2(fabric, audio_feature, input_ids, leng, model: GPT, text_tokenizer, step,
           snacmodel, out_dir=None):
     with fabric.init_tensor():
-        model.set_kv_cache(batch_size=1, device=audio_feature.device)
+        model.set_kv_cache(batch_size=0, device=audio_feature.device)
     global EXPORT_MODEL
     global EXPORT_DATA
     tokenlist = generate_AA(

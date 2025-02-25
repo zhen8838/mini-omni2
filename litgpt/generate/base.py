@@ -46,7 +46,7 @@ def sample(
 ) -> torch.Tensor:
     if top_p < 0.0 or top_p > 1.0:
         raise ValueError(f"top_p must be in [0, 1], got {top_p}")
-    logits = logits[0, -1]
+    logits = logits[-1]
     # optionally crop the logits to only the top k options
     if top_k is not None:
         v, i = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -141,7 +141,7 @@ def next_token_A1T2_k230(
     if export_model:
         os.makedirs(f"output/models/lit_gpt", exist_ok=True)
         if not os.path.exists('output/models/lit_gpt/lit_gpt.onnx'):
-          torch.onnx.export(model, (input_embs, past_ks, past_vs, input_pos), "output/models/lit_gpt/lit_gpt.onnx", input_names=['input_embs', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={'input_embs': {2:'seq_len'},'past_keys': {4:'history_len'},'past_values': {4:'history_len'}, 'input_pos': {0:'seq_len'}})
+          torch.onnx.export(model, (input_embs, past_ks, past_vs, input_pos), "output/models/lit_gpt/lit_gpt.onnx", input_names=['input_embs', 'past_keys', 'past_values', 'input_pos'], output_names=['logits_a', 'logit_t', 'next_ks', 'next_vs'], dynamic_axes={'input_embs': {1:'seq_len'},'past_keys': {3:'history_len'},'past_values': {3:'history_len'}, 'input_pos': {0:'seq_len'}})
 
     logits_a, logit_t, next_ks, next_vs = model(input_embs, past_ks, past_vs, input_pos)
 
@@ -727,8 +727,9 @@ def generate_AA(
     input_embs = model.transformer.wte(input_ids)
 
     input_embs = model.concat_feat(audio_embs, input_embs)
-    past_ks = torch.empty([24,1,2,1,0,64],dtype=torch.float32,device=device) # gqa
-    past_vs = torch.empty([24,1,2,1,0,64],dtype=torch.float32,device=device)
+    input_embs = input_embs.squeeze(1) # remove batch
+    past_ks = torch.empty([24,2,1,0,64],dtype=torch.float32,device=device) # gqa
+    past_vs = torch.empty([24,2,1,0,64],dtype=torch.float32,device=device)
     tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
         model,
         input_embs,
@@ -766,6 +767,7 @@ def generate_AA(
             os.makedirs(f"output/datas/wte/calibs", exist_ok=True)
             np.save(f"./output/datas/wte/calibs/input_ids_{step}_{sub_step}.npy", model_input_ids.numpy())
         input_embs = model.transformer.wte(model_input_ids)
+        input_embs = input_embs.squeeze(1) # remove batch
         tokens_A, token_T, past_ks, past_vs = next_token_A1T2_k230(
             model,
             input_embs,

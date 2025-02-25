@@ -108,7 +108,7 @@ def sample(
   logits = torch.tensor(logits)
   if top_p < 0.0 or top_p > 1.0:
     raise ValueError(f"top_p must be in [0, 1], got {top_p}")
-  logits = logits[0, -1]
+  logits = logits[-1]
   # optionally crop the logits to only the top k options
   if top_k is not None:
     v, i = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -209,9 +209,9 @@ def generate_AA(
   input_embs_concat = concat_feat(audio_embs, input_embs)
   # input_embs_concat_golden = np.load(f"output/compare/adapter/input_embs_concat{step}.npy")
   # assert np.allclose(input_embs_concat_golden, input_embs_concat)
-
-  past_ks = np.empty([24, 1, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
-  past_vs = np.empty([24, 1, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
+  input_embs_concat = input_embs_concat[:, 0, ...]  # remove batch dim
+  past_ks = np.empty([24, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
+  past_vs = np.empty([24, 2, 1, 0, 64], dtype=np.float32)  # 1,14,2048,64
   tokens_A, token_T, past_ks, past_vs = next_token_A1T2(
       lit_gpt,
       input_embs_concat,
@@ -242,6 +242,7 @@ def generate_AA(
     model_input_ids.append(token_T.reshape([1, -1]).astype(np.int64))
     model_input_ids = np.stack(model_input_ids)
     (input_embs, ) = wte.run(None, {'input_ids': model_input_ids})
+    input_embs = input_embs[:, 0, ...]  # remove batch dim
     tokens_A, token_T, past_ks, past_vs = next_token_A1T2(
         lit_gpt,
         input_embs,
@@ -288,18 +289,18 @@ def A1_A2(audio_feature: np.ndarray, input_ids: np.ndarray, leng: int, adapter: 
       include_prompt=True,
       generate_text=True,
   )
-  
+
   audiolist = reconscruct_snac(tokenlist)
   tokenlist = tokenlist[-1]
   if text_vocabsize in tokenlist:
-      tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
+    tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
   if out_dir is None:
-      out_dir = "./output/default_onnx/A1-A2"
+    out_dir = "./output/default_onnx/A1-A2"
   else:
-      out_dir = out_dir + "/A1-A2"
+    out_dir = out_dir + "/A1-A2"
   if not os.path.exists(out_dir):
-      os.makedirs(out_dir)
-      
+    os.makedirs(out_dir)
+
   audio = reconstruct_tensors(audiolist)
   (audio_hat,) = snac.run(None, {f'audio_{j}': audio[j].numpy() for j in range(len(audio))})
   sf.write(
@@ -308,12 +309,14 @@ def A1_A2(audio_feature: np.ndarray, input_ids: np.ndarray, leng: int, adapter: 
       24000,
   )
 
-  EXPORT_MODEL = False # for only once.
+  EXPORT_MODEL = False  # for only once.
   return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
+
 def get_time_str():
-    time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    return time_str
+  time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+  return time_str
+
 
 def main():
   out_dir = f"./output/{get_time_str()}/onnx_infer"
